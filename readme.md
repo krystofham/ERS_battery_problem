@@ -1,5 +1,5 @@
 # ERS Boost Zone Estimator – 2026 F1 Regulations
-
+> This readme is mostly done with AI. Claude Sonnet 3.6
 Physical estimation of ERS deployment zones from FastF1 telemetry.  
 Developed as a response to [Fast-F1 issue #864](https://github.com/theOehrly/Fast-F1/issues/864).
 
@@ -107,14 +107,8 @@ Cache is stored in `./fastf1_cache/`. Outputs (PNG, CSV) are saved there too.
 
 ---
 
-## Related
-
-- [Fast-F1 issue #864](https://github.com/theOehrly/Fast-F1/issues/864) — original feature request
-- [Fast-F1 issue #902](https://github.com/theOehrly/Fast-F1/issues/902) — 2025 vs. 2026 speed trace comparison
-
----
 
 ## License
 
 MIT License — Copyright (c) 2026 Kryštof H.  
-See [LICENSE](LICENSE) for full text.
+See [license](lincense) for full text.
