@@ -76,15 +76,17 @@ def clean_telemetry(df: pd.DataFrame) -> pd.DataFrame:
     df = df[cols].dropna().copy().reset_index(drop=True)
     df["time_s"] = df["Time"].dt.total_seconds()
 
-    dv = df["Speed"].diff()
-    dt = df["time_s"].diff().replace(0, np.nan)
-    df["accel_raw"] = dv / dt
+    # 1. Calculate raw acceleration
+    df["accel_raw"] = df["Speed"].diff() / df["time_s"].diff().replace(0, np.nan)
 
-    # Remove physically impossible spikes (>150 km/h/s ≈ 41 m/s²)
-    invalid = df["accel_raw"].abs() > 150
-    df = df.iloc[1:].reset_index(drop=True)  
-    invalid = df["accel_raw"].abs() > 150    
-    df = df[~invalid].reset_index(drop=True) 
+    # 2. Explicitly drop rows where acceleration couldn't be calculated 
+    # (This handles the first row AND any mid-lap time-gaps safely)
+    df = df.dropna(subset=["accel_raw"]).copy()
+
+    # 3. Filter out physically impossible sensor spikes (>150 km/h/s)
+    valid_accel_mask = df["accel_raw"].abs() <= 150
+    df = df[valid_accel_mask].reset_index(drop=True)
+  
     # Savitzky-Golay acceleration smoothing
     if len(df) > SG_WINDOW:
         df["accel_smooth"] = savgol_filter(
