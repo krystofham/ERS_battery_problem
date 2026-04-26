@@ -70,7 +70,7 @@ FUEL_BURN_RATE      = 1.7     # kg/lap – Average fuel burn rate (±0.3 kg/lap)
 # [NEW] GRADIENT PARAMETERS
 # Z-axis smoothing window. Raw Z-axis from GPS has noise; aggressive smoothing
 # avoids injecting high-frequency force spikes into the baseline.
-GRADIENT_SG_WINDOW   = 81     # Must be odd, and > SG_POLYORDER
+GRADIENT_SG_WINDOW   = 301     # Must be odd, and > SG_POLYORDER
 GRADIENT_SG_POLYORDER = 3
 
 
@@ -168,7 +168,7 @@ def compute_gradient_force(df: pd.DataFrame, car_mass: float) -> pd.Series:
 
     Smoothing:
       Raw Z from GPS has ~0.5 m noise. Without smoothing this creates ±G/sample
-      force spikes. GRADIENT_SG_WINDOW (default 31) provides ~15 m of smoothing
+      force spikes. GRADIENT_SG_WINDOW (default 201) as lower values are not working properly
       at typical telemetry resolution, preserving genuine elevation changes like
       Eau Rouge / Raidillon while suppressing sensor flutter.
 
@@ -196,11 +196,11 @@ def compute_gradient_force(df: pd.DataFrame, car_mass: float) -> pd.Series:
     dz = np.gradient(z_smooth, d)
 
     # θ = arctan(dZ/dD); sin(θ) ≈ dZ/dD for small angles, but use exact form
-    theta = np.arctan(dz)
-    MAX_ANGLE_DEG = 15.0
-    theta = np.clip(theta, 
-                    np.radians(-MAX_ANGLE_DEG), 
-                    np.radians(MAX_ANGLE_DEG))
+    MAX_ANGLE_DEG = 15
+    theta_raw = np.arctan(dz)
+    clipped = np.sum(np.abs(np.degrees(theta_raw)) > MAX_ANGLE_DEG)
+    print(f"  Gradient clip zasáhl: {clipped} vzorků z {len(theta_raw)} ({100*clipped/len(theta_raw):.1f}%)")
+    theta = np.clip(theta_raw, np.radians(-MAX_ANGLE_DEG), np.radians(MAX_ANGLE_DEG))
     f_gradient = car_mass * G * np.sin(theta)
 
     # Diagnostic output
