@@ -1,5 +1,6 @@
 # FastF1 Cache (data download)
 fastf1_cache/
+graphs/
 
 # Python environment
 __pycache__/
