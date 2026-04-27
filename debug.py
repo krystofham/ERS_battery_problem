@@ -7,6 +7,7 @@ v3: Z_CLAMPED kill-switch na úrovni modulu
 """
 
 import fastf1
+from scipy.ndimage import gaussian_filter1d
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -42,16 +43,31 @@ lap = (session.laps
        .pick_fastest())
 tel = lap.get_telemetry()
 
-# ── Z track median přes všechna kola ─────────────────────────────────────────
+# ── Z track median přes všechna kola + smooth track map ──────────────────────
 all_tel = session.laps.pick_drivers(DRIVER_CODE).get_telemetry()
 BIN_SIZE = 10
 bins = np.arange(0, all_tel["Distance"].max() + BIN_SIZE, BIN_SIZE)
 all_tel["DistBin"] = pd.cut(all_tel["Distance"], bins=bins, labels=bins[:-1])
-z_track = all_tel.groupby("DistBin", observed=True)["Z"].median()
-z_track_dist = z_track.index.astype(float).values
-z_track_vals = z_track.values
-z_vals_clean = np.interp(tel["Distance"].values, z_track_dist, z_track_vals)
 
+# OPRAVA: Použijeme pouze observed=False, aby délka odpovídala bins[:-1]
+z_track_series = all_tel.groupby("DistBin", observed=False)["Z"].median()
+
+# Vytvoření tabulky mapy trati
+track_map = pd.DataFrame({
+    "DistBin": bins[:-1].astype(float),
+    "Z_raw": z_track_series.values
+})
+
+# Vyplnění děr (pokud v binu nikdo nejel) a vyhlazení
+track_map["Z_raw"] = track_map["Z_raw"].ffill().bfill()
+track_map["Z_smooth"] = gaussian_filter1d(track_map["Z_raw"].values, sigma=3)
+
+# Interpolace výšky z mapy trati do telemetrie konkrétního kola
+z_vals_clean = np.interp(
+    tel["Distance"].values, 
+    track_map["DistBin"].values, 
+    track_map["Z_smooth"].values
+)
 # ── Z_CLAMPED – definováno na úrovni modulu ───────────────────────────────────
 Z_CLAMPED = "Z" in tel.columns and tel["Z"].max() >= 99.9
 Z_SOURCE   = "track_median" if Z_CLAMPED else "raw"
@@ -127,7 +143,7 @@ else:
         print(f"\n  Gradient (raw SG) při různých oknech:")
         print(f"  {'SG okno':<10} {'max °':>8} {'min °':>8} {'std °':>8}  komentář")
         print("  " + "-" * 55)
-        for window in [31, 101, 201, 301, 501]:
+        for window in [201, 401, 601, 801]:
             if window >= len(z_vals):
                 continue
             z_s = savgol_filter(z_vals, window_length=window, polyorder=SG_POLYORDER)
@@ -146,44 +162,60 @@ grad_raw   = None
 if "Z" not in tel.columns:
     print("  ✗ Z kanál chybí – pipeline přeskočena.")
 else:
+    # 0. Příprava vstupních dat
     if Z_CLAMPED:
-        print(f"  ⚠ Z data clamped – vstup nahrazen track medianem (z_vals_clean).")
-        z_input = z_vals_clean   # <-- přepnutí zdroje
+        print(f"  ⚠ Z data clamped – vstup nahrazen track medianem.")
+        z_input = z_vals_clean   # Délka odpovídá tel
     else:
-        z_input = z_vals
+        z_input = tel["Z"].ffill().bfill().values
+
+    # Vzdálenosti pro gradient
+    dist_tel = tel["Distance"].values
+    dd = np.gradient(dist_tel)
+    dd[dd == 0] = 0.1 # Ochrana proti dělení nulou
+
+    # VÝPOČET GRAD_RAW (pro porovnání v tabulce)
+    dz_raw_in = np.gradient(z_input)
+    grad_raw = np.degrees(np.arctan2(dz_raw_in, dd))
 
     # Krok 1: Spike outlier removal
     print(f"\n  Krok 1: Spike removal (threshold = {SPIKE_THRESHOLD_M} m)")
     z_step1 = z_input.copy().astype(float)
-    dz      = np.diff(z_step1)
-    spikes  = np.abs(dz) > SPIKE_THRESHOLD_M
-    spike_indices = np.where(spikes)[0] + 1
-    z_step1[spike_indices] = np.nan
-    n_removed = spikes.sum()
-    print(f"    Odstraněno   : {n_removed} vzorků ({100*n_removed/len(z_vals):.1f}%)")
-    z_step1 = pd.Series(z_step1).interpolate("linear").values
-    print(f"    Interpolováno lineárně.")
+    dz_diff = np.diff(z_step1, prepend=z_step1[0])
+    spikes  = np.abs(dz_diff) > SPIKE_THRESHOLD_M
+    z_step1[spikes] = np.nan
+    n_removed = np.isnan(z_step1).sum()
+    z_step1 = pd.Series(z_step1).interpolate("linear").ffill().bfill().values
+    print(f"    Odstraněno   : {n_removed} vzorků")
 
     # Krok 2: Median filter
-    print(f"\n  Krok 2: Median filter (kernel = {MEDIAN_KERNEL})")
+    print(f"  Krok 2: Median filter (kernel = {MEDIAN_KERNEL})")
     z_step2 = medfilt(z_step1, kernel_size=MEDIAN_KERNEL)
-    diff_median = np.abs(z_step2 - z_step1).mean()
-    print(f"    Průměrná změna oproti kroku 1: {diff_median:.3f} m")
 
-    # Krok 3: SG smoothing na track medianu
-    print(f"\n  Krok 3: SG smoothing (okno = {SG_WINDOW_FINAL}, vstup = track median)")
-    z_step3 = gaussian_filter1d(z_step2, sigma=15)
+    # Krok 3: Gaussian smoothing
+    print(f"  Krok 3: Gaussian smoothing (sigma=105)")
+    z_step3 = gaussian_filter1d(z_step2, sigma=105)
+    
+    # Uložení finální výšky
+    tel["Z_final"] = z_step3
 
-    # Výsledný gradient
-    # POZOR: d_vals musí být tel["Distance"].values
-    grad_raw   = np.degrees(np.arctan2(np.gradient(z_vals_clean), np.gradient(d_vals)))
-    grad_clean = np.degrees(np.arctan2(np.gradient(z_step3), np.gradient(d_vals)))
+    # Krok 4: Výpočet vyčištěného gradientu
+    dz_clean = np.gradient(tel["Z_final"].values)
+    grad_clean = np.degrees(np.arctan2(dz_clean, dd))
+    tel["Gradient_Deg"] = grad_clean
+
+    # --- KONTROLA A VÝPISY ---
+    critical = (np.abs(grad_clean) > 15).sum()
+    print(f"\n  Kritické body (>15°): {critical}")
+    print(f"  Průměrná vzdálenost mezi vzorky: {dd.mean():.4f} m")
 
     print(f"\n  Porovnání gradientu před / po čištění:")
     print(f"  {'':25} {'před':>10} {'po':>10}")
+    # Teď už grad_raw i grad_clean existují jako pole
     print(f"  {'Max gradient':25} {grad_raw.max():>10.1f}° {grad_clean.max():>10.1f}°")
     print(f"  {'Min gradient':25} {grad_raw.min():>10.1f}° {grad_clean.min():>10.1f}°")
     print(f"  {'Std':25} {grad_raw.std():>10.2f}° {grad_clean.std():>10.2f}°")
+    print(f"  {'Kritické body >15°':25} {'—':>10} {critical:>10}")
 
     mass = 776.2
     f_max_clean = mass * 9.81 * np.sin(np.radians(abs(grad_clean.max())))
@@ -230,16 +262,18 @@ ax.legend(fontsize=8, facecolor="#1a1a1a", labelcolor="#cccccc")
 # Panel 3: Gradient před čištěním
 ax = axes[2]
 if "Z" in tel.columns and grad_raw is not None:
-    for window, color, lw in [(31, "#4da6ff", 0.8), (101, "#44aa66", 1.0), (301, "#f5a623", 1.2)]:
-        z_s = savgol_filter(z_input, window_length=window, polyorder=SG_POLYORDER)
-        ax.plot(dist, np.degrees(np.arctan(np.gradient(z_s, dist))),
-                color=color, lw=lw, label=f"SG={window}")
-    ax.axhline(0,   color="#444", lw=0.5)
-    ax.axhline(5,   color="#555", ls=":", lw=0.8, label="±5°")
-    ax.axhline(-5,  color="#555", ls=":", lw=0.8)
-    ax.axhline(15,  color="#e63946", ls="--", lw=0.8, label="±15° clip")
+    # Použijeme jen opravdu velká okna, menší nemají smysl
+    for window, color, lw in [(201, "#4da6ff", 0.8), (501, "#44aa66", 1.0), (801, "#f5a623", 1.2)]:
+        if window < len(z_input):
+            z_s = savgol_filter(z_input, window_length=window, polyorder=2)
+            # DŮLEŽITÉ: Používáme np.arctan2 pro stabilitu
+            temp_grad = np.degrees(np.arctan2(np.gradient(z_s), np.gradient(dist)))
+            ax.plot(dist, temp_grad, color=color, lw=lw, label=f"SG={window}")
+    
+    ax.set_ylim(-20, 20)  # OŘÍZNUTÍ OSY Y - neuvidíš ty 60° nesmysly
+    ax.axhline(15,  color="#e63946", ls="--", lw=0.8, label="±15° Limit")
     ax.axhline(-15, color="#e63946", ls="--", lw=0.8)
-
+    ax.set_title("Gradient před čištěním (Savgol filtry - limitováno na ±20°)", color="#aaaaaa", fontsize=9)
 # Panel 4: Gradient po čištění
 ax = axes[3]
 if grad_clean is not None:
