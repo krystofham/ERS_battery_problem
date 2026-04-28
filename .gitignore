@@ -6,3 +6,21 @@ graphs/
 __pycache__/
 *.pyc
 .venv/
+
+# Virtual Environment
+vevn/
+venv/
+.env/
+env/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS-Specific metadata
+.DS_Store
+Thumbs.db
+
+# Environment Variables (Never commit secrets!)
+.env
